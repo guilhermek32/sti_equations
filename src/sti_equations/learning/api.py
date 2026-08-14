@@ -3,16 +3,32 @@ from __future__ import annotations
 import uuid
 from collections.abc import Sequence
 
+import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..config import get_settings
 from ..database import get_session
 from ..identity.api import Actor, current_actor, require_role
 from ..modeling.api import Candidate, Observation, hint_depth, mastery_by_skill, select_next
-from ..tutoring.api import EquationError, default_service
-from .models import Assignment, Attempt, Classroom, HintRecord, Membership, Problem, Submission
+from ..tutoring.api import (
+    EquationError,
+    LlamaCppExplanationProvider,
+    default_service,
+    deterministic_explanation,
+)
+from .models import (
+    Assignment,
+    Attempt,
+    Classroom,
+    ExplanationRecord,
+    HintRecord,
+    Membership,
+    Problem,
+    Submission,
+)
 
 router = APIRouter(prefix="/v1", tags=["learning"])
 
@@ -70,6 +86,16 @@ class ProgressRead(BaseModel):
     points: int
     by_difficulty: dict[str, int]
     mastery: dict[str, float]
+
+
+class ExplanationRead(BaseModel):
+    text: str
+    provider: str
+    model: str
+    prompt_version: str
+    fallback: bool
+
+    model_config = {"from_attributes": True}
 
 
 class ClassroomCreate(BaseModel):
@@ -261,6 +287,33 @@ async def submit_answer(
     await session.commit()
     await session.refresh(submission)
     return submission
+
+
+@router.post("/attempts/{attempt_id}/explanation", response_model=ExplanationRead)
+async def explain_attempt(
+    attempt_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    actor: Actor = Depends(current_actor),
+) -> ExplanationRecord:
+    attempt = await _owned_attempt(session, attempt_id, actor)
+    problem = await session.get(Problem, attempt.problem_id)
+    service = default_service()
+    service.validate(problem.equation, problem.variable)
+    hints = service.hints(problem.equation, problem.variable)
+    settings = get_settings()
+    explanation = deterministic_explanation(hints)
+    if settings.explanation_url:
+        try:
+            explanation = await LlamaCppExplanationProvider(
+                settings.explanation_url, settings.explanation_model
+            ).explain(problem.equation, hints)
+        except (httpx.HTTPError, RuntimeError):
+            pass
+    record = ExplanationRecord(attempt_id=attempt.id, **explanation.__dict__)
+    session.add(record)
+    await session.commit()
+    await session.refresh(record)
+    return record
 
 
 @router.get("/me/progress", response_model=ProgressRead)

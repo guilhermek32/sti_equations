@@ -13,6 +13,7 @@ dependencies = [
   "httpx==0.28.1",
   "pandas==2.3.2",
   "pydantic-settings==2.10.1",
+  "requests==2.34.2",
   "sqlalchemy==2.0.43",
   "streamlit==1.49.1",
   "sympy==1.14.0",
@@ -45,3 +46,7 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
 ignore = ["B008"] # FastAPI uses Depends/Header calls as declarative defaults.
+
+[project.scripts]
+sti-api = "sti_equations.cli:run_api"
+sti-evaluate = "sti_equations.evaluation:main"

@@ -75,6 +75,21 @@ class Submission(Base):
     )
 
 
+class ExplanationRecord(Base):
+    __tablename__ = "explanation"
+    __table_args__ = {"schema": "learning"}
+    id: Mapped[uuid.UUID] = uuid_pk()
+    attempt_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("learning.attempt.id"), index=True)
+    provider: Mapped[str] = mapped_column(String(32))
+    model: Mapped[str] = mapped_column(String(120))
+    prompt_version: Mapped[str] = mapped_column(String(32))
+    text: Mapped[str] = mapped_column(Text)
+    fallback: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
 class Classroom(Base):
     __tablename__ = "classroom"
     __table_args__ = {"schema": "learning"}
