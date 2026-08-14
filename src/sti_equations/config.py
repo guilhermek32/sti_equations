@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     cookie_secure: bool = False
     explanation_url: str | None = None
     explanation_model: str = "local-model"
+    auto_create_database: bool = True
 
     model_config = SettingsConfigDict(env_prefix="STI_", env_file=".env.local")
 

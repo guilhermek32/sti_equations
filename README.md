@@ -1,83 +1,81 @@
-# 📚 Resolvedor de Equações de Primeiro Grau com Explicações em Linguagem Natural
+# STI Equations
 
-Este projeto é uma prova de conceito de um Sistema Tutor Inteligente (STI) que integra:
+An adaptive tutor for first-degree equations. The application is a FastAPI modular monolith with
+four internal packages: `identity`, `learning`, `modeling`, and `tutoring`. Streamlit is an HTTP-only
+temporary client; correctness, hints, scoring, progress, and authorization live on the server.
 
-- Um **resolvedor simbólico** de equações de 1º grau (`mathsteps`);
-- Uma **LLM (Large Language Model)** local usando `Ollama`;
-- Um componente Python que realiza o pipeline:
-  - Extrai a equação de uma pergunta feita por um aluno;
-  - Resolve a equação com `mathsteps`;
-  - Reescreve os passos da resolução em linguagem natural.
+## Local development
 
----
-
-## 🛠 Pré-requisitos
-
-### Python
-
-- Python 3.10 ou superior
-- `pip` para instalar dependências
-
-### Node.js
-
-- Node.js 18+ (necessário para executar o `mathsteps`)
-
----
-
-## 📦 Instalação
-
-### 1. Clonar o repositório
+Python dependencies are managed exclusively with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-git clone https://github.com/seu-usuario/seu-repositorio.git
-cd seu-repositorio
+uv sync --all-groups
+uv run sti-api
 ```
 
-### 2. Instalar dependências Python
-```bash
-pip install -r requirements.txt
-```
-
-### 3. Instalar dependências do mathsteps
-Entre na pasta ext/js/mathsteps e instale os pacotes Node.js:
-```bash
-cd ext/js/mathsteps
-npm install
-```
-
-Essa etapa é necessária porque o módulo solver.py usa o mathsteps via node para resolver equações.
-
-### 4. Volte para a raiz do projeto:
-```bash
-cd ../../../
-```
-
-### 5. Instale o Ollama
-https://ollama.com/download
-
----
-
-## 🚀 Execução
-
-Certifique-se de que o modelo Ollama (gemma3, por padrão) está disponível localmente executando:
+In a second terminal:
 
 ```bash
-ollama run gemma3
+uv run streamlit run src/streamlit_app.py
 ```
 
-Execute o script principal com:
+The default development database is SQLite. It is created and seeded on startup. PostgreSQL is the
+deployment database and uses separate `identity` and `learning` schemas.
+
+Run the quality gates with:
+
 ```bash
-python src/app.py
+uv run ruff check src tests migrations
+uv run lint-imports --no-cache
+uv run pytest -q
 ```
 
-Isso irá:
-- Usar a LLM para extrair a equação de uma pergunta em linguagem natural;
-- Resolver a equação com mathsteps;
-- Reescrever os passos da resolução em uma explicação mais amigável ao aluno.
+The tests do not require Node, Mathsteps, Ollama, llama.cpp, or browser cookies. SymPy is authoritative
+for parsing and correctness, and native first-degree hints keep tutoring available without Node.
 
----
+## PostgreSQL deployment
 
-### 📚 Referências
-- Mathsteps — Biblioteca open-source da Google para resolução simbólica de equações matemáticas.
-- Ollama — Plataforma para executar modelos LLM localmente.
-- LangChain — Framework para encadeamento de modelos de linguagem.
+Copy `.env.example` to `.env.local`, set a strong `STI_AUTH_SECRET`, then run:
+
+```bash
+docker compose up --build
+```
+
+The app container runs `alembic upgrade head` before starting. The API is at port 8000 and Streamlit
+at port 8501. The optional Ollama profile is started with `docker compose --profile ai up`; explanations
+remain non-critical and fall back to deterministic hints.
+
+Back up and restore the PostgreSQL database with:
+
+```bash
+scripts/backup.sh backup.dump
+scripts/restore.sh backup.dump
+```
+
+## llama.cpp explanations and evaluation
+
+Any OpenAI-compatible llama.cpp server can provide optional explanations. For example:
+
+```bash
+llama-server -m /path/to/model.gguf --host 0.0.0.0 --port 8081
+STI_EXPLANATION_URL=http://127.0.0.1:8081 uv run sti-api
+```
+
+The reproducible learner-policy experiment and optional explanation evaluation are run with:
+
+```bash
+uv run sti-evaluate --output artifacts/evaluation
+uv run sti-evaluate --output artifacts/evaluation --llama-url http://127.0.0.1:8081
+```
+
+No identifiable learner data is collected by the evaluation harness. Revisit the data model and
+retention policy under LGPD before a real classroom pilot.
+
+## API
+
+The OpenAPI document is available at `/docs`. The main routes are registration/login/logout,
+problem listing and adaptive selection, idempotent attempts and submissions, model-driven hints,
+derived progress, optional explanations, and teacher-owned classrooms, memberships, assignments,
+and problem creation. Error responses include `code`, `message`, and `request_id`.
+
+See [plan.md](plan.md) for the architectural decisions, extraction triggers, and research design.

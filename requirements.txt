@@ -1,8 +1,0 @@
-langchain
-dotenv
-langchain-community
-langchain-ollama
-streamlit
-sympy
-extra-streamlit-components
-plotly

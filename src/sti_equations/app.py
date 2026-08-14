@@ -7,18 +7,22 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from .config import get_settings
 from .database import async_session_factory, create_database
 from .identity.api import UserCreate, UserRead, auth_backend, users
 from .learning.api import router as learning_router
 from .learning.models import Problem
 from .learning.seed import PROBLEMS
+from .telemetry import log_request
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     del app
-    await create_database()
+    if get_settings().auto_create_database:
+        await create_database()
     async with async_session_factory() as session:
         if not await session.scalar(select(func.count()).select_from(Problem)):
             session.add_all(
@@ -42,20 +46,29 @@ async def request_id_middleware(request: Request, call_next):
     request.state.request_id = request_id
     response = await call_next(request)
     response.headers["X-Request-ID"] = request_id
+    log_request(request_id, request.method, request.url.path, response.status_code)
     return response
+
+
+def _error(request: Request, status_code: int, code: str, message: str, details=None):
+    content = {
+        "code": code,
+        "message": message,
+        "request_id": getattr(request.state, "request_id", "unknown"),
+    }
+    if details is not None:
+        content["details"] = details
+    return JSONResponse(status_code=status_code, content=content)
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_error(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    return _error(request, exc.status_code, "http_error", str(exc.detail))
 
 
 @app.exception_handler(RequestValidationError)
 async def validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
-    return JSONResponse(
-        status_code=422,
-        content={
-            "code": "validation_error",
-            "message": "Request validation failed",
-            "request_id": request.state.request_id,
-            "details": exc.errors(),
-        },
-    )
+    return _error(request, 422, "validation_error", "Request validation failed", exc.errors())
 
 
 app.include_router(

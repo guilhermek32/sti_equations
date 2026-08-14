@@ -143,3 +143,5 @@ async def test_attempt_ownership_is_enforced(client: AsyncClient) -> None:
         headers={"Idempotency-Key": "foreign"},
     )
     assert response.status_code == 404
+    assert set(response.json()) == {"code", "message", "request_id"}
+    assert response.json()["request_id"]

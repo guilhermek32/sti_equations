@@ -1,0 +1,51 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: sti
+      POSTGRES_USER: sti
+      POSTGRES_PASSWORD: sti
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sti -d sti"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .
+    environment:
+      STI_DATABASE_URL: postgresql+asyncpg://sti:sti@db:5432/sti
+      STI_AUTH_SECRET: ${STI_AUTH_SECRET:-development-only-change-me}
+      STI_AUTO_CREATE_DATABASE: "false"
+      STI_EXPLANATION_URL: ${STI_EXPLANATION_URL:-}
+      STI_EXPLANATION_MODEL: ${STI_EXPLANATION_MODEL:-local-model}
+    command: ["sh", "-c", "alembic upgrade head && sti-api"]
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  client:
+    build: .
+    command: ["streamlit", "run", "src/streamlit_app.py", "--server.address=0.0.0.0"]
+    environment:
+      STI_API_URL: http://app:8000
+    ports:
+      - "8501:8501"
+    depends_on:
+      - app
+
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ai"]
+    volumes:
+      - ollama-data:/root/.ollama
+    ports:
+      - "11434:11434"
+
+volumes:
+  postgres-data:
+  ollama-data:
