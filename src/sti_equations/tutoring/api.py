@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Protocol
 
 from .engine import EquationEngine, MathstepsFallback
+from .engine import EquationError as EquationError
 
 
 class SolutionKind(StrEnum):

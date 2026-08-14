@@ -44,4 +44,4 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
-
+ignore = ["B008"] # FastAPI uses Depends/Header calls as declarative defaults.
