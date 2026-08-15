@@ -114,3 +114,15 @@ async def test_problem_edits_preserve_attempt_snapshot_and_teacher_workflow(
     stored_attempt = await session.scalar(select(Attempt))
     assert stored_attempt.problem_snapshot["equation"] == "x + 1 = 2"
     assert stored_attempt.problem_snapshot["version"] == 1
+
+    state["user"] = users["student"]
+    submission = await client.post(
+        f"/v1/attempts/{attempt.json()['id']}/submissions",
+        json={"answer": "1"},
+        headers={"Idempotency-Key": "snapshot-submission"},
+    )
+    assert submission.status_code == 200, submission.text
+    assert submission.json()["correct"] is True
+    assert submission.json()["points"] == 5
+    progress = await client.get("/v1/me/progress")
+    assert progress.json()["by_difficulty"] == {"Fácil": 1, "Médio": 0, "Difícil": 0}

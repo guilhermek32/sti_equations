@@ -170,6 +170,10 @@ def _problem_read(problem: Problem) -> ProblemRead:
     return ProblemRead.model_validate(problem)
 
 
+def _attempt_problem(attempt: Attempt) -> ProblemRead:
+    return ProblemRead.model_validate(attempt.problem_snapshot)
+
+
 async def _owned_attempt(session: AsyncSession, attempt_id: uuid.UUID, actor: Actor) -> Attempt:
     attempt = await session.scalar(
         select(Attempt).where(Attempt.id == attempt_id, Attempt.user_id == actor.id)
@@ -182,14 +186,21 @@ async def _owned_attempt(session: AsyncSession, attempt_id: uuid.UUID, actor: Ac
 async def _history(session: AsyncSession, user_id: uuid.UUID) -> list[Observation]:
     rows = (
         await session.execute(
-            select(Problem.skills, Submission.correct)
-            .join(Attempt, Attempt.problem_id == Problem.id)
+            select(Attempt.problem_snapshot, Submission.correct)
             .join(Submission, Submission.attempt_id == Attempt.id)
             .where(Attempt.user_id == user_id)
             .order_by(Submission.created_at)
         )
     ).all()
-    return [Observation(skill, correct) for skills, correct in rows for skill in skills]
+    return [
+        Observation(skill, correct)
+        for snapshot, correct in rows
+        for skill in _attempt_problem_from_snapshot(snapshot).skills
+    ]
+
+
+def _attempt_problem_from_snapshot(snapshot: dict) -> ProblemRead:
+    return ProblemRead.model_validate(snapshot)
 
 
 @router.get("/problems", response_model=list[ProblemRead])
@@ -295,9 +306,10 @@ async def start_attempt(
         )
     )
     if existing:
-        problem = await session.get(Problem, existing.problem_id)
         return AttemptRead(
-            id=existing.id, problem_id=existing.problem_id, problem=_problem_read(problem)
+            id=existing.id,
+            problem_id=existing.problem_id,
+            problem=_attempt_problem(existing),
         )
     problem = await session.scalar(
         select(Problem).where(Problem.id == payload.problem_id, Problem.active)
@@ -325,7 +337,7 @@ async def start_attempt(
             return AttemptRead(
                 id=concurrent.id,
                 problem_id=concurrent.problem_id,
-                problem=_problem_read(problem),
+                problem=_attempt_problem(concurrent),
             )
         raise
     await session.refresh(attempt)
@@ -339,7 +351,7 @@ async def request_hint(
     actor: Actor = Depends(current_actor),
 ) -> HintRecord:
     attempt = await _owned_attempt(session, attempt_id, actor)
-    problem = await session.get(Problem, attempt.problem_id)
+    problem = _attempt_problem(attempt)
     hints = default_service().hints(problem.equation, problem.variable)
     used = await session.scalar(
         select(func.count()).select_from(HintRecord).where(HintRecord.attempt_id == attempt.id)
@@ -379,7 +391,7 @@ async def submit_answer(
     )
     if existing:
         return existing
-    problem = await session.get(Problem, attempt.problem_id)
+    problem = _attempt_problem(attempt)
     try:
         correct = default_service().is_equivalent_answer(
             problem.equation, problem.variable, payload.answer
@@ -422,7 +434,7 @@ async def explain_attempt(
     actor: Actor = Depends(current_actor),
 ) -> ExplanationRecord:
     attempt = await _owned_attempt(session, attempt_id, actor)
-    problem = await session.get(Problem, attempt.problem_id)
+    problem = _attempt_problem(attempt)
     service = default_service()
     service.validate(problem.equation, problem.variable)
     hints = service.hints(problem.equation, problem.variable)
@@ -448,8 +460,7 @@ async def progress(
 ) -> ProgressRead:
     rows = (
         await session.execute(
-            select(Problem.difficulty, Problem.skills, Submission.correct, Submission.points)
-            .join(Attempt, Attempt.problem_id == Problem.id)
+            select(Attempt.problem_snapshot, Submission.correct, Submission.points)
             .join(Submission, Submission.attempt_id == Attempt.id)
             .where(Attempt.user_id == actor.id)
         )
@@ -458,8 +469,13 @@ async def progress(
     labels = {1: "Fácil", 2: "Médio", 3: "Difícil"}
     by_difficulty = {label: 0 for label in labels.values()}
     for row in correct_rows:
-        by_difficulty[labels[row.difficulty]] += 1
-    observations = [Observation(skill, row.correct) for row in rows for skill in row.skills]
+        problem = _attempt_problem_from_snapshot(row.problem_snapshot)
+        by_difficulty[labels[problem.difficulty]] += 1
+    observations = [
+        Observation(skill, row.correct)
+        for row in rows
+        for skill in _attempt_problem_from_snapshot(row.problem_snapshot).skills
+    ]
     return ProgressRead(
         solved=len(correct_rows),
         points=sum(row.points for row in rows),
