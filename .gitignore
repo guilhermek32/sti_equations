@@ -208,3 +208,5 @@ __marimo__/
 
 # LLM Models
 models/
+artifacts/
+*.db

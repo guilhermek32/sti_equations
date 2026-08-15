@@ -29,8 +29,32 @@ from .models import (
     Problem,
     Submission,
 )
+from .seed import PROBLEMS
 
 router = APIRouter(prefix="/v1", tags=["learning"])
+
+
+def problem_catalog() -> list[tuple[str, str, int, list[str]]]:
+    return [
+        (equation, variable, difficulty, list(skills))
+        for equation, variable, difficulty, skills in PROBLEMS
+    ]
+
+
+async def seed_problems(session: AsyncSession) -> None:
+    if not await session.scalar(select(func.count()).select_from(Problem)):
+        session.add_all(
+            [
+                Problem(
+                    equation=equation,
+                    variable=variable,
+                    difficulty=difficulty,
+                    skills=skills,
+                )
+                for equation, variable, difficulty, skills in PROBLEMS
+            ]
+        )
+        await session.commit()
 
 
 class ProblemRead(BaseModel):

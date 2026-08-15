@@ -49,7 +49,7 @@ class ExplanationProvider(Protocol):
 class LlamaCppExplanationProvider:
     PROMPT_VERSION = "explanation-pt-v1"
 
-    def __init__(self, base_url: str, model: str, timeout: float = 20.0) -> None:
+    def __init__(self, base_url: str, model: str, timeout: float = 45.0) -> None:
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._timeout = timeout
@@ -67,6 +67,8 @@ class LlamaCppExplanationProvider:
                 json={
                     "model": self._model,
                     "temperature": 0.1,
+                    "max_tokens": 384,
+                    "reasoning_effort": "low",
                     "messages": [{"role": "user", "content": prompt}],
                 },
             )

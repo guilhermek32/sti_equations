@@ -17,3 +17,12 @@ def test_selection_targets_skill_nearest_threshold() -> None:
     ]
     chosen = select_next(candidates, {"isolate": 0.95, "fractions": 0.7})
     assert chosen and chosen.problem_id == "fraction"
+
+
+def test_selection_moves_on_from_mastered_skills() -> None:
+    candidates = [
+        Candidate("mastered", ("isolate",), 1),
+        Candidate("learning", ("fractions",), 2),
+    ]
+    chosen = select_next(candidates, {"isolate": 0.81, "fractions": 0.2})
+    assert chosen and chosen.problem_id == "learning"

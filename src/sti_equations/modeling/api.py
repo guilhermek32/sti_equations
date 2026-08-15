@@ -59,6 +59,16 @@ def select_next(
     if not pool:
         return None
 
+    unmastered = [
+        candidate
+        for candidate in pool
+        if any(
+            mastery.get(skill, DEFAULT_PARAMETERS.initial) < threshold for skill in candidate.skills
+        )
+    ]
+    if unmastered:
+        pool = unmastered
+
     def rank(candidate: Candidate) -> tuple[float, int, str]:
         levels = [mastery.get(skill, DEFAULT_PARAMETERS.initial) for skill in candidate.skills]
         distance = abs(min(levels, default=0.2) - threshold)

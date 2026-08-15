@@ -41,8 +41,8 @@ async def get_session() -> AsyncGenerator[AsyncSession]:
 
 async def create_database(database_engine: AsyncEngine = engine) -> None:
     # Import owners only to register their tables in the common metadata.
-    from .identity import models as identity_models  # noqa: F401
-    from .learning import models as learning_models  # noqa: F401
+    from .identity import api as identity_api  # noqa: F401
+    from .learning import api as learning_api  # noqa: F401
 
     async with database_engine.begin() as connection:
         if database_engine.dialect.name == "postgresql":

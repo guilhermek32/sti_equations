@@ -6,15 +6,13 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from sqlalchemy import func, select
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .config import get_settings
 from .database import async_session_factory, create_database
 from .identity.api import UserCreate, UserRead, auth_backend, users
 from .learning.api import router as learning_router
-from .learning.models import Problem
-from .learning.seed import PROBLEMS
+from .learning.api import seed_problems
 from .telemetry import log_request
 
 
@@ -24,16 +22,7 @@ async def lifespan(app: FastAPI):
     if get_settings().auto_create_database:
         await create_database()
     async with async_session_factory() as session:
-        if not await session.scalar(select(func.count()).select_from(Problem)):
-            session.add_all(
-                [
-                    Problem(
-                        equation=equation, variable=variable, difficulty=difficulty, skills=skills
-                    )
-                    for equation, variable, difficulty, skills in PROBLEMS
-                ]
-            )
-            await session.commit()
+        await seed_problems(session)
     yield
 
 
