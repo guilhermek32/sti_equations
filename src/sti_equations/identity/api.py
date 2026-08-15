@@ -4,15 +4,17 @@ import uuid
 from collections.abc import AsyncGenerator, Callable
 
 from fastapi import Depends, HTTPException, status
-from fastapi_users import BaseUserManager, FastAPIUsers, UUIDIDMixin, schemas
-from fastapi_users.authentication import AuthenticationBackend, CookieTransport, JWTStrategy
+from fastapi_users import BaseUserManager, FastAPIUsers, UUIDIDMixin, exceptions, schemas
+from fastapi_users.authentication import AuthenticationBackend, CookieTransport
+from fastapi_users.authentication.strategy.db import DatabaseStrategy
 from fastapi_users.db import SQLAlchemyUserDatabase
+from fastapi_users_db_sqlalchemy.access_token import SQLAlchemyAccessTokenDatabase
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
 from ..database import get_session
-from .models import User
+from .models import AccessToken, User
 
 
 class UserRead(schemas.BaseUser[uuid.UUID]):
@@ -45,7 +47,9 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
 
     async def validate_password(self, password: str, user: UserCreate | User) -> None:
         if len(password) < 8:
-            raise ValueError("Password must contain at least 8 characters")
+            raise exceptions.InvalidPasswordException(
+                reason="Password must contain at least 8 characters"
+            )
 
 
 async def get_user_manager(
@@ -63,14 +67,22 @@ cookie_transport = CookieTransport(
 )
 
 
-def get_jwt_strategy() -> JWTStrategy:
-    return JWTStrategy(secret=get_settings().auth_secret, lifetime_seconds=3600)
+async def get_access_token_database(
+    session: AsyncSession = Depends(get_session),
+) -> AsyncGenerator[SQLAlchemyAccessTokenDatabase]:
+    yield SQLAlchemyAccessTokenDatabase(session, AccessToken)
+
+
+def get_database_strategy(
+    database: SQLAlchemyAccessTokenDatabase = Depends(get_access_token_database),
+) -> DatabaseStrategy:
+    return DatabaseStrategy(database, lifetime_seconds=3600)
 
 
 auth_backend = AuthenticationBackend(
     name="cookie",
     transport=cookie_transport,
-    get_strategy=get_jwt_strategy,
+    get_strategy=get_database_strategy,
 )
 users = FastAPIUsers[User, uuid.UUID](get_user_manager, [auth_backend])
 current_user = users.current_user(active=True)
@@ -86,4 +98,11 @@ def require_role(role: str) -> Callable:
 
 
 async def current_actor(user: User = Depends(current_user)) -> Actor:
+    return Actor(id=user.id, email=user.email, role=user.role)
+
+
+async def actor_by_id(session: AsyncSession, user_id: uuid.UUID) -> Actor | None:
+    user = await session.get(User, user_id)
+    if user is None:
+        return None
     return Actor(id=user.id, email=user.email, role=user.role)

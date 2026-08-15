@@ -4,14 +4,15 @@ import uuid
 from collections.abc import Sequence
 
 import httpx
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
 from ..database import get_session
-from ..identity.api import Actor, current_actor, require_role
+from ..identity.api import Actor, actor_by_id, current_actor, require_role
 from ..modeling.api import Candidate, Observation, hint_depth, mastery_by_skill, select_next
 from ..tutoring.api import (
     EquationError,
@@ -73,6 +74,14 @@ class ProblemCreate(BaseModel):
     variable: str = Field(min_length=1, max_length=1)
     difficulty: int = Field(ge=1, le=3)
     skills: list[str] = Field(min_length=1)
+
+
+class ProblemUpdate(BaseModel):
+    equation: str | None = None
+    variable: str | None = Field(default=None, min_length=1, max_length=1)
+    difficulty: int | None = Field(default=None, ge=1, le=3)
+    skills: list[str] | None = None
+    active: bool | None = None
 
 
 class AttemptCreate(BaseModel):
@@ -137,9 +146,24 @@ class MembershipCreate(BaseModel):
     student_id: uuid.UUID
 
 
+class MembershipRead(BaseModel):
+    id: uuid.UUID
+    student_id: uuid.UUID
+
+    model_config = {"from_attributes": True}
+
+
 class AssignmentCreate(BaseModel):
     problem_id: uuid.UUID
     title: str = Field(min_length=1, max_length=120)
+
+
+class AssignmentRead(BaseModel):
+    id: uuid.UUID
+    problem_id: uuid.UUID
+    title: str
+
+    model_config = {"from_attributes": True}
 
 
 def _problem_read(problem: Problem) -> ProblemRead:
@@ -207,6 +231,57 @@ async def create_problem(
     return problem
 
 
+async def _owned_problem(
+    session: AsyncSession, problem_id: uuid.UUID, teacher_id: uuid.UUID
+) -> Problem:
+    problem = await session.scalar(
+        select(Problem).where(Problem.id == problem_id, Problem.owner_id == teacher_id)
+    )
+    if not problem:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Problem not found")
+    return problem
+
+
+@router.patch("/problems/{problem_id}", response_model=ProblemRead)
+async def update_problem(
+    problem_id: uuid.UUID,
+    payload: ProblemUpdate,
+    session: AsyncSession = Depends(get_session),
+    actor: Actor = Depends(require_role("teacher")),
+) -> Problem:
+    problem = await _owned_problem(session, problem_id, actor.id)
+    changes = payload.model_dump(exclude_unset=True)
+    equation = changes.get("equation", problem.equation)
+    variable = changes.get("variable", problem.variable)
+    try:
+        default_service().validate(equation, variable)
+    except EquationError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    for field, value in changes.items():
+        setattr(problem, field, value)
+    problem.version += 1
+    await session.commit()
+    await session.refresh(problem)
+    return problem
+
+
+@router.delete(
+    "/problems/{problem_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    response_model=None,
+)
+async def deactivate_problem(
+    problem_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    actor: Actor = Depends(require_role("teacher")),
+) -> None:
+    problem = await _owned_problem(session, problem_id, actor.id)
+    problem.active = False
+    problem.version += 1
+    await session.commit()
+
+
 @router.post("/attempts", response_model=AttemptRead, status_code=status.HTTP_201_CREATED)
 async def start_attempt(
     payload: AttemptCreate,
@@ -237,7 +312,22 @@ async def start_attempt(
         problem_snapshot=snapshot,
     )
     session.add(attempt)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        concurrent = await session.scalar(
+            select(Attempt).where(
+                Attempt.user_id == actor.id, Attempt.idempotency_key == idempotency_key
+            )
+        )
+        if concurrent:
+            return AttemptRead(
+                id=concurrent.id,
+                problem_id=concurrent.problem_id,
+                problem=_problem_read(problem),
+            )
+        raise
     await session.refresh(attempt)
     return AttemptRead(id=attempt.id, problem_id=problem.id, problem=_problem_read(problem))
 
@@ -308,7 +398,19 @@ async def submit_answer(
         points=points,
     )
     session.add(submission)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        concurrent = await session.scalar(
+            select(Submission).where(
+                Submission.attempt_id == attempt.id,
+                Submission.idempotency_key == idempotency_key,
+            )
+        )
+        if concurrent:
+            return concurrent
+        raise
     await session.refresh(submission)
     return submission
 
@@ -382,7 +484,11 @@ async def list_classrooms(
     session: AsyncSession = Depends(get_session),
     actor: Actor = Depends(require_role("teacher")),
 ) -> Sequence[Classroom]:
-    return (await session.scalars(select(Classroom).where(Classroom.teacher_id == actor.id))).all()
+    return (
+        await session.scalars(
+            select(Classroom).where(Classroom.teacher_id == actor.id, Classroom.active)
+        )
+    ).all()
 
 
 @router.post("/classrooms", response_model=ClassroomRead, status_code=status.HTTP_201_CREATED)
@@ -398,31 +504,175 @@ async def create_classroom(
     return classroom
 
 
-@router.post("/classrooms/{classroom_id}/memberships", status_code=status.HTTP_201_CREATED)
+@router.patch("/classrooms/{classroom_id}", response_model=ClassroomRead)
+async def update_classroom(
+    classroom_id: uuid.UUID,
+    payload: ClassroomCreate,
+    session: AsyncSession = Depends(get_session),
+    actor: Actor = Depends(require_role("teacher")),
+) -> Classroom:
+    classroom = await _owned_classroom(session, classroom_id, actor.id)
+    classroom.name = payload.name
+    await session.commit()
+    await session.refresh(classroom)
+    return classroom
+
+
+@router.delete(
+    "/classrooms/{classroom_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    response_model=None,
+)
+async def delete_classroom(
+    classroom_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    actor: Actor = Depends(require_role("teacher")),
+) -> None:
+    classroom = await _owned_classroom(session, classroom_id, actor.id)
+    classroom.active = False
+    await session.commit()
+
+
+@router.get("/classrooms/{classroom_id}/memberships", response_model=list[MembershipRead])
+async def list_memberships(
+    classroom_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    actor: Actor = Depends(require_role("teacher")),
+) -> Sequence[Membership]:
+    await _owned_classroom(session, classroom_id, actor.id)
+    return (
+        await session.scalars(select(Membership).where(Membership.classroom_id == classroom_id))
+    ).all()
+
+
+@router.post(
+    "/classrooms/{classroom_id}/memberships",
+    response_model=MembershipRead,
+    status_code=status.HTTP_201_CREATED,
+)
 async def add_membership(
     classroom_id: uuid.UUID,
     payload: MembershipCreate,
     session: AsyncSession = Depends(get_session),
     actor: Actor = Depends(require_role("teacher")),
-) -> dict[str, uuid.UUID]:
+) -> Membership:
     await _owned_classroom(session, classroom_id, actor.id)
+    student = await actor_by_id(session, payload.student_id)
+    if student is None or student.role != "student":
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Student not found")
     membership = Membership(classroom_id=classroom_id, student_id=payload.student_id)
     session.add(membership)
     await session.commit()
-    return {"id": membership.id}
+    await session.refresh(membership)
+    return membership
 
 
-@router.post("/classrooms/{classroom_id}/assignments", status_code=status.HTTP_201_CREATED)
+@router.delete(
+    "/classrooms/{classroom_id}/memberships/{membership_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    response_model=None,
+)
+async def delete_membership(
+    classroom_id: uuid.UUID,
+    membership_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    actor: Actor = Depends(require_role("teacher")),
+) -> None:
+    await _owned_classroom(session, classroom_id, actor.id)
+    membership = await session.scalar(
+        select(Membership).where(
+            Membership.id == membership_id, Membership.classroom_id == classroom_id
+        )
+    )
+    if not membership:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Membership not found")
+    await session.delete(membership)
+    await session.commit()
+
+
+@router.get("/classrooms/{classroom_id}/assignments", response_model=list[AssignmentRead])
+async def list_assignments(
+    classroom_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    actor: Actor = Depends(require_role("teacher")),
+) -> Sequence[Assignment]:
+    await _owned_classroom(session, classroom_id, actor.id)
+    return (
+        await session.scalars(select(Assignment).where(Assignment.classroom_id == classroom_id))
+    ).all()
+
+
+@router.post(
+    "/classrooms/{classroom_id}/assignments",
+    response_model=AssignmentRead,
+    status_code=status.HTTP_201_CREATED,
+)
 async def create_assignment(
     classroom_id: uuid.UUID,
     payload: AssignmentCreate,
     session: AsyncSession = Depends(get_session),
     actor: Actor = Depends(require_role("teacher")),
-) -> dict[str, uuid.UUID]:
+) -> Assignment:
     await _owned_classroom(session, classroom_id, actor.id)
     if not await session.get(Problem, payload.problem_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Problem not found")
     assignment = Assignment(classroom_id=classroom_id, **payload.model_dump())
     session.add(assignment)
     await session.commit()
-    return {"id": assignment.id}
+    await session.refresh(assignment)
+    return assignment
+
+
+@router.delete(
+    "/classrooms/{classroom_id}/assignments/{assignment_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    response_model=None,
+)
+async def delete_assignment(
+    classroom_id: uuid.UUID,
+    assignment_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    actor: Actor = Depends(require_role("teacher")),
+) -> None:
+    await _owned_classroom(session, classroom_id, actor.id)
+    assignment = await session.scalar(
+        select(Assignment).where(
+            Assignment.id == assignment_id, Assignment.classroom_id == classroom_id
+        )
+    )
+    if not assignment:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Assignment not found")
+    await session.delete(assignment)
+    await session.commit()
+
+
+@router.get("/classrooms/{classroom_id}/report")
+async def classroom_report(
+    classroom_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    actor: Actor = Depends(require_role("teacher")),
+) -> dict:
+    await _owned_classroom(session, classroom_id, actor.id)
+    rows = (
+        await session.execute(
+            select(
+                Attempt.user_id,
+                func.count(Submission.id),
+                func.sum(Submission.points),
+            )
+            .join(Submission, Submission.attempt_id == Attempt.id)
+            .join(Membership, Membership.student_id == Attempt.user_id)
+            .where(Membership.classroom_id == classroom_id)
+            .group_by(Attempt.user_id)
+        )
+    ).all()
+    return {
+        "classroom_id": classroom_id,
+        "students": [
+            {"student_id": user_id, "submissions": submissions, "points": points or 0}
+            for user_id, submissions, points in rows
+        ],
+    }

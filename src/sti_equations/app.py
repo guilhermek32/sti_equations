@@ -70,6 +70,8 @@ app.include_router(
     prefix="/v1/auth",
     tags=["auth"],
 )
+app.include_router(users.get_reset_password_router(), prefix="/v1/auth", tags=["auth"])
+app.include_router(users.get_verify_router(UserRead), prefix="/v1/auth", tags=["auth"])
 app.include_router(learning_router)
 
 

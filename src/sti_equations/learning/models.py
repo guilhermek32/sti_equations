@@ -96,6 +96,7 @@ class Classroom(Base):
     id: Mapped[uuid.UUID] = uuid_pk()
     teacher_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("identity.user.id"), index=True)
     name: Mapped[str] = mapped_column(String(120))
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
 class Membership(Base):
