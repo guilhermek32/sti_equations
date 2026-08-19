@@ -1,0 +1,23 @@
+[importlinter]
+root_package = sti_equations
+
+[importlinter:contract:package-internals]
+name = Packages use public interfaces
+type = forbidden
+source_modules =
+    sti_equations.learning
+forbidden_modules =
+    sti_equations.identity.models
+    sti_equations.tutoring.engine
+allow_indirect_imports = true
+
+[importlinter:contract:stateless-packages]
+name = Modeling and tutoring do not depend on stateful packages
+type = forbidden
+source_modules =
+    sti_equations.modeling
+    sti_equations.tutoring
+forbidden_modules =
+    sti_equations.identity
+    sti_equations.learning
+
